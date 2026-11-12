@@ -1,0 +1,145 @@
+# 借壳概率预测：全部可调参数集中在这里。路径均相对于项目根目录。
+# 运行列表、组合成员、主模型都在跑之前确定，跑完后全部报告，不因结果删减或替换。
+
+[paths]
+data = "data/raw/original.csv"   # Stata 预处理输出（stata/original.do）
+ipo = "data/raw/IPO.xlsx"        # 月度 IPO 上会/通过统计（仅用于描述性统计作图）
+outputs = "outputs"              # 模型、预测结果
+tables = "results/tables"         # 报告用表格（markdown + csv）
+figures = "results/figures"       # 报告用图片
+
+[data]
+features = [
+    "IPO_1", "IPOnum_1", "Soe_1", "ST_1",
+    "Size_3", "Op_3", "Sales_3", "reverrate_3", "Insider_3",
+    "Lev_3", "Cash_3", "Roe_3", "TOP1_3", "return_3",
+    "NegEq_1",                        # 由 Lev_1 构造：上一年资产负债率 > 1，即净资产为负
+]
+market_vars = ["IPO_1", "IPOnum_1"]   # 市场层面变量：同一年所有公司取值相同，按年份补齐面板滞后造成的缺失
+zero_as_missing = ["TOP1_3"]          # Stata 中把缺失的第一大股东持股比例填成了 0，这里还原为缺失
+industry_col = "Ind"                  # 仅用于描述性统计（行业分布表）
+use_industry = false                  # 借壳与行业无关，模型不纳入行业变量；true 时生成行业哑变量并删除行业缺失的观测
+industry_base = "A"                   # use_industry = true 时行业哑变量的基准组（证监会 2012 门类首字母）
+
+[rolling]
+window = 9                # 训练窗口：预测 t 年时使用 [t-9, t-1] 年的数据
+first_pred_year = 2012
+last_pred_year = 2023
+
+# ---------------------------------------------------------------- 前推调参
+# 每个候选参数只做一遍滚动预测（first_val_year 至 last_pred_year，每年拟合一次）；
+# 预测 t 年时，比较各候选在 [t-lookback, t-1] 年的合并年内排序 AUC，选最高者，
+# 直接使用该候选在 t 年的滚动预测。得分并列时选更简单的候选。
+[tuning]
+lookback = 3
+first_val_year = 2009
+seed = 42                 # 随机种子统一为 [seed, 年份, 子样本序号]
+mlp_seeds = 5             # MLP 在单个训练集上用几个随机种子训练、取平均
+n_jobs = -1               # 并行进程数，-1 = 全部 CPU 核心
+
+# ---------------------------------------------------------------- 平衡数据的方法（只在训练窗口内）
+[sampling]
+ratio = 20                # S2、S3、S4、S5 的负例:正例
+n_bags = 10               # S2、S3 的子样本数，各训练一个模型，原始分数取平均
+smote_k = 5               # S5 的近邻数（不超过正例数 - 1）
+psm_C = 1.0               # S4 倾向得分逻辑回归的 C，事先固定、不调参
+
+[samplers.s0]
+label = "全数据"
+[samplers.s1]
+label = "类权重"
+space = { w = [5, 20] }   # 正例权重，作为候选参数参与前推调参
+[samplers.s2]
+label = "随机欠采样"
+[samplers.s3]
+label = "按年匹配欠采样"
+[samplers.s4]
+label = "PSM 式匹配"
+[samplers.s5]
+label = "SMOTE"
+
+# ---------------------------------------------------------------- 模型
+# 运行名 = <模型>_<方法>，由各模型的 samplers 展开。
+# prep：impute = 中位数插补 + 缺失指示变量 + 标准化；raw = 保留缺失值（树模型原生处理）。S5 一律用插补版。
+# step：1 = 第一步（平衡方法有没有用），2 = 第二步（模型之间有没有差别）。
+# space：候选参数；fixed：固定参数。
+
+[models.logit]
+label = "逻辑回归 L2"
+kind = "logit"
+prep = "impute"
+step = 1
+space = { C = [0.01, 0.1, 1.0, 10.0] }
+samplers = ["s0", "s1", "s2", "s3", "s4", "s5"]
+
+[models.xgb]
+label = "XGBoost"
+kind = "xgb"
+prep = "raw"
+step = 1
+space = { max_depth = [1, 2, 3], lr_trees = [[0.05, 300], [0.02, 800]] }   # lr_trees = [学习率, 树的数量]
+fixed = { objective = "binary:logistic", min_child_weight = 1, subsample = 0.8, colsample_bytree = 0.7, reg_lambda = 5, reg_alpha = 0, gamma = 0, max_delta_step = 0 }
+samplers = ["s0", "s1", "s2", "s3", "s4", "s5"]
+
+[models.logit_l1]
+label = "逻辑回归 L1"
+kind = "logit_l1"
+prep = "impute"
+step = 2
+space = { C = [0.01, 0.1, 1.0, 10.0] }
+samplers = ["s0", "s3"]
+
+[models.lda]
+label = "LDA"
+kind = "lda"
+prep = "impute"
+step = 2
+space = { shrinkage = ["none", "auto"] }   # toml 没有 null，"none" 表示不收缩；LDA 不接受样本权重，没有 S1
+samplers = ["s0", "s3"]
+
+[models.rf]
+label = "随机森林"
+kind = "rf"
+prep = "raw"
+step = 2
+space = { min_samples_leaf = [5, 20, 50], max_features = ["sqrt", 0.5] }
+fixed = { n_estimators = 500 }
+bag_n_estimators = 100    # S2/S3 下每个子样本的树数
+samplers = ["s0", "s1", "s3", "s5"]
+
+[models.mlp]
+label = "MLP"
+kind = "mlp"
+prep = "impute"
+step = 2
+space = { hidden = [[16], [32, 16]], alpha = [0.001, 0.01, 0.1] }
+fixed = { max_iter = 200 }   # 不开早停：sklearn 按验证集准确率早停，正例占 0.5% 时不起作用
+samplers = ["s0", "s1", "s3", "s5"]
+
+[models.xgb_sq]                # 原论文设定（平方误差 + 随机欠采样），只放附录
+label = "XGBoost 平方误差"
+kind = "xgb"
+prep = "raw"
+step = 2
+space = { max_depth = [1, 2, 3], lr_trees = [[0.05, 300], [0.02, 800]] }
+fixed = { objective = "reg:squarederror", min_child_weight = 1, subsample = 0.8, colsample_bytree = 0.7, reg_lambda = 5, reg_alpha = 0, gamma = 0, max_delta_step = 0 }
+samplers = ["s2"]
+
+# ---------------------------------------------------------------- 评估
+[evaluate]
+baseline = "logit_s0"              # 配对自助法 AUC 差值的对照基准
+main = "xgb_s1"                    # 主模型：特征重要性、SHAP、预测模式图和 Shell_prob 主列
+ensemble = { label = "等权组合", members = ["logit_s0", "logit_l1_s0", "lda_s0", "rf_s1", "xgb_s1", "mlp_s1"] }
+plot_runs = ["logit_s0", "logit_l1_s0", "lda_s0", "rf_s1", "xgb_s1", "mlp_s1"]   # 主图、逐年表只用这些 + 组合
+periods = [[2012, 2016], [2017, 2023]]   # 分期评价：借壳高峰期 / 借壳新规之后
+top_k = [0.02, 0.05, 0.10]         # 2%：论文样本内口径；5%：对应 20 分组的顶组；10%：对应 10 分组的顶组
+bootstrap = 1000                   # 按公司整体重抽样的次数（同一公司多年的观测不独立）
+alpha = 0.05                       # Holm 校正的显著性水平
+pattern_features = ["Roe_3", "reverrate_3", "IPOnum_1", "Size_3"]   # 论文图 3-6 的预测模式变量
+
+# `uv run main.py ... --quick`：候选只取每个模型的第一组，只用于检查流程能否跑通
+[quick]
+n_bags = 2
+mlp_seeds = 1
+bootstrap = 50
+outputs = "outputs/_quick"

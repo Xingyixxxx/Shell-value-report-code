@@ -1,0 +1,45 @@
+# 壳概率因子检验：全部可调参数集中在这里。路径相对于项目根目录（绝对路径除外）。
+# 检验方向与选择规则在看结果之前写定（见 [selection]），跑完后全部报告，不因结果删减。
+
+[paths]
+src_download = "/Volumes/YF/大学/Course/6_2025_Summer/competition_大创/regression_test/download"
+src_events = "/Volumes/YF/大学/Course/6_2025_Summer/competition_大创/数据合并以及预处理/data_download/listed_company.dta"
+raw = "data/raw/original.csv"     # 公司特征、行业、Y（与模型同一份数据）
+ipo = "data/raw/IPO.xlsx"         # 月度 IPO 上会统计
+outputs = "outputs"               # 各运行的滚动预测（outputs/<run>/predictions.csv.gz）
+prev_outputs = "outputs/_v2"      # 删除借壳后样本时的旧预测，只用于前后对比；目录不存在时跳过对比
+data = "factor_test/data"         # dta 转出的 csv
+tables = "results/factor/tables"
+figures = "results/factor/figures"
+
+[signal]
+core = ["xgb_s1", "logit_s0", "logit_l1_s0", "lda_s0", "rf_s1", "mlp_s1", "ensemble"]   # 详细检验的信号
+main = "xgb_s1"
+ensemble = ["logit_s0", "logit_l1_s0", "lda_s0", "rf_s1", "xgb_s1", "mlp_s1"]            # 与 config.toml 的等权组合一致
+apply_month = 5                   # t 年的预测基于 t-1 年年报，t 年 5 月至 t+1 年 4 月使用
+
+[sample]
+start = "2012-05"
+end = "2023-12"
+markets = [1, 4]                  # 上证 A、深证 A 主板，与建模样本一致
+
+[test]
+nw_lag = 4                        # Newey-West 滞后阶数，≈ 0.75·T^(1/3)，与原论文相同
+groups = [5, 10, 20]              # 单变量分组数；20 组是原论文的口径
+weights = ["ew", "vw", "vwt", "sqrt", "bh"]   # 等权、流通市值、总市值、根号流通市值、等权买入持有
+headline_weights = ["ew", "vw"]   # 全部信号的多重检验族：等权、流通市值加权
+factor_models = ["CAPM", "FF3", "FF4", "FF5", "FF6", "CH3"]
+primary_model = "FF6"             # FF5 + UMD，主口径
+bootstrap = 2000                  # Romano-Wolf、单调性检验的重抽样次数
+block = 6                         # 平稳自助法的平均块长（月）
+seed = 42
+cost_oneway = 0.003               # 单边交易成本（佣金、印花税、冲击的粗略估计）
+periods = [["2012-05", "2016-08"], ["2016-09", "2023-12"]]   # 2016-09 重组新规前后
+ipo_pauses = [["2012-10", "2014-01"], ["2015-07", "2015-11"]]   # 与 shellpred/describe.py 的 IPO 暂停区间一致
+
+[selection]
+# 方向：高壳概率 → 高收益（原论文的结论），方向事先固定，不按结果翻转。
+# 六项指标各取在 全部信号 × {ew, vw} 中的百分位排名，等权平均得到总分；
+# 通过门槛：主口径 alpha 的 Romano-Wolf 调整后 p < 0.10。没有方法通过时如实报告。
+criteria = ["t_FF6", "t_CH3", "t_FF6_neutral", "t_FM", "t_FF6_min_period", "t_FF6_long"]
+rw_alpha = 0.10

@@ -1,0 +1,29 @@
+# ---- 环境与系统文件
+.venv/
+__pycache__/
+*.pyc
+.DS_Store
+.ipynb_checkpoints/
+.claude/
+.vscode/
+.idea/
+# ---- 原始数据（CSMAR 授权数据，不公开；获取方式见 README）
+data/raw/*
+!data/raw/README.md
+factor_test/data/*
+!factor_test/data/README.md
+
+# ---- 体积大、可由代码重新生成的中间产物
+outputs/
+results/factor/run.log
+
+# ---- Office 临时文件
+~$*
+
+# ---- 构建产物
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
